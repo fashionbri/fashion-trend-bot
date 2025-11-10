@@ -10,9 +10,9 @@ Steps:
 """
 
 from pathlib import Path
+import pandas as pd
 
 # --- Import pipeline modules ---
-# Make sure these files exist in src/
 from src.runway_scraper import run as scrape_runway
 from src.retail_tracker import google_trends
 from src.correlate import run as correlate
@@ -25,30 +25,31 @@ try:
 except Exception:
     HAVE_EVAL = False
 
-# If you used the config.py I gave you, these paths will already be created.
-from src.config import PROCESSED
-
-import pandas as pd
+# Folders come from config.py (we’ll use LATEST because your folder = data/latest)
+from src.config import LATEST
 
 def run_eval():
     """Run time-aware evaluation if evaluation module is available."""
     if not HAVE_EVAL:
         print("5) Evaluation: module not found, skipping.")
         return
-    latest_corr = sorted(PROCESSED.glob("runway_retail_corr_*.csv"))
+
+    latest_corr = sorted(LATEST.glob("runway_retail_corr_*.csv"))
     if not latest_corr:
         print("5) Evaluation: no correlation file found, skipping.")
         return
+
     df = pd.read_csv(latest_corr[-1], parse_dates=["date"])
     keep = [c for c in ["date", "kw", "runway_count", "retail_count"] if c in df.columns]
     if not keep:
         print("5) Evaluation: needed columns missing, skipping.")
         return
-    df = df[keep].dropna(subset=["date", "kw", "runway_count"])
 
+    df = df[keep].dropna(subset=["date", "kw", "runway_count"])
     holdout, cv = run_evaluation_pipeline(df)
-    out1 = PROCESSED / "eval_holdout_latest.csv"
-    out2 = PROCESSED / "eval_cv_summary_latest.csv"
+
+    out1 = LATEST / "eval_holdout_latest.csv"
+    out2 = LATEST / "eval_cv_summary_latest.csv"
     holdout.to_csv(out1, index=False)
     cv.to_csv(out2, index=False)
     print(f"   → {out1}")
@@ -76,3 +77,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
