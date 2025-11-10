@@ -1,0 +1,3 @@
+filepath,has_fiber,has_fabric,has_length,has_cut,has_garment,has_style,matches
+data/articles/test.txt,1,1,1,1,1,0,cut:tailored; fabric:tweed; fiber:wool; garment:coat; length:ankle-length
+data/articles/sample.txt,1,1,1,1,1,0,cut:tailored; fabric:satin; fabric:tweed; fiber:wool; garment:blazer; garment:skirt; length:ankle-length

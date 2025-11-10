@@ -129,3 +129,90 @@ def load_text(path: Path):
         soup = BeautifulSoup(raw, "lxml")
         for bad in soup(["script","style","noscript"]): bad.decompose()
         raw = soup.get_t_
+def extract_folder(in_dir: str, out_csv: str):
+    """
+    Walk `in_dir`, read .txt/.html files, normalize text, and write a CSV with:
+      filepath, has_fiber, has_fabric, has_length, has_cut, has_garment, has_style, matches
+    `matches` is a semicolon-joined list like "fiber:cotton; fabric:denim; style:boho"
+    """
+    import os, re, csv
+    from bs4 import BeautifulSoup
+    from pathlib import Path
+
+    # --- vocab (keep in sync with the lists near the top of this file) ---
+    FIBRES  = VOCABS["fibre"]
+    FABRICS = VOCABS["fabric"]
+    LENGTHS = VOCABS["length"]
+    CUTS    = VOCABS["cut"]
+    GARMS   = VOCABS["garment"]
+    STYLES  = VOCABS["style"]
+
+    def clean_text(text: str) -> str:
+        text = re.sub(r"\s+", " ", text)
+        return text.lower()
+
+    def read_text(path: Path) -> str:
+        if path.suffix.lower() in {".html", ".htm"}:
+            html = path.read_text(encoding="utf-8", errors="ignore")
+            soup = BeautifulSoup(html, "html.parser")
+            for s in soup(["script", "style", "noscript"]):
+                s.decompose()
+            return clean_text(soup.get_text(" "))
+        else:
+            return clean_text(path.read_text(encoding="utf-8", errors="ignore"))
+
+    def any_in(text: str, words: list[str]) -> tuple[bool, list[str]]:
+        found = []
+        for w in words:
+            # word-boundary match to avoid partials (e.g., "cottony")
+            if re.search(rf"\b{re.escape(w)}\b", text):
+                found.append(w)
+        return (len(found) > 0, found)
+
+    in_dir = Path(in_dir)
+    rows = []
+    for p in in_dir.rglob("*"):
+        if not p.is_file() or p.suffix.lower() not in {".txt", ".html", ".htm"}:
+            continue
+        txt = read_text(p)
+
+        flags = {}
+        matches_list = []
+
+        for label, vocab in [
+            ("fiber",   FIBRES),
+            ("fabric",  FABRICS),
+            ("length",  LENGTHS),
+            ("cut",     CUTS),
+            ("garment", GARMS),
+            ("style",   STYLES),
+        ]:
+            has, hits = any_in(txt, vocab)
+            flags[label] = has
+            if hits:
+                matches_list.extend([f"{label}:{h}" for h in hits])
+
+        rows.append({
+            "filepath": str(p),
+            "has_fiber":   int(flags["fiber"]),
+            "has_fabric":  int(flags["fabric"]),
+            "has_length":  int(flags["length"]),
+            "has_cut":     int(flags["cut"]),
+            "has_garment": int(flags["garment"]),
+            "has_style":   int(flags["style"]),
+            "matches": "; ".join(sorted(set(matches_list))),
+        })
+
+    out_path = Path(out_csv)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with out_path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=[
+                "filepath","has_fiber","has_fabric","has_length",
+                "has_cut","has_garment","has_style","matches"
+            ],
+        )
+        writer.writeheader()
+        writer.writerows(rows)
+
