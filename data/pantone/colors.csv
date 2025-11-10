@@ -3219,7 +3219,3 @@ PANTONE Warm Gray 9 C,13216,51,2,7
 PANTONE Warm Red C,13217,57,68,48
 PANTONE Yellow 012 C,13218,87,2,86
 PANTONE Yellow C,13219,89,-1,87
-
-git add data/pantone/colors.csv
-git commit -m "Add full Pantone 3200+ color dataset"
-git push
