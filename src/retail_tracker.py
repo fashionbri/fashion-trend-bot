@@ -44,7 +44,7 @@ def google_trends():
     Writes: data/latest/google_trends_YYYYMMDD.csv
     """
     # ✅ FIX: remove retry/backoff args — now just timeout
-    pytrend = TrendReq(hl="en-US", tz=0, requests_args={"timeout": 30})
+pytrend = TrendReq(hl="en-US", tz=0)
     frames = []
 
     for batch in _chunks(TERMS, 5):  # <= 5 terms per call is safer
