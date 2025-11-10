@@ -1,10 +1,6 @@
 """
 End-to-end pipeline runner for the Fashion Trend Bot.
 
-import sys, os
-sys.path.append(os.path.dirname(os.path.dirname(__file__)))
-
-
 Steps:
 1) Scrape runway SERP → data/history/runway_serp_*.csv
 2) Pull retail signals (Google Trends) → data/latest/google_trends_*.csv
@@ -12,6 +8,10 @@ Steps:
 4) Forecast per keyword → data/latest/forecast_kw_*.csv  and models/*
 5) (Optional) Evaluate with time-aware CV → data/latest/eval_*.csv
 """
+
+# Ensure the repository root is on sys.path so "src" can be imported
+import sys, os
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from pathlib import Path
 import pandas as pd
@@ -22,14 +22,14 @@ from src.retail_tracker import google_trends
 from src.correlate import run as correlate
 from src.forecast import run as forecast
 
-# Evaluation is optional—comment out if you haven't added src/evaluate.py yet.
+# Evaluation is optional—will be skipped if module isn't present
 try:
     from src.evaluate import run_evaluation_pipeline
     HAVE_EVAL = True
 except Exception:
     HAVE_EVAL = False
 
-# Folders come from config.py (we’ll use LATEST because your folder = data/latest)
+# Folders from config (your processed folder is data/latest)
 from src.config import LATEST
 
 def run_eval():
@@ -44,12 +44,14 @@ def run_eval():
         return
 
     df = pd.read_csv(latest_corr[-1], parse_dates=["date"])
-    keep = [c for c in ["date", "kw", "runway_count", "retail_count"] if c in df.columns]
-    if not keep:
+    needed = ["date", "kw", "runway_count"]
+    if not all(c in df.columns for c in needed):
         print("5) Evaluation: needed columns missing, skipping.")
         return
 
+    keep = [c for c in ["date", "kw", "runway_count", "retail_count"] if c in df.columns]
     df = df[keep].dropna(subset=["date", "kw", "runway_count"])
+
     holdout, cv = run_evaluation_pipeline(df)
 
     out1 = LATEST / "eval_holdout_latest.csv"
@@ -81,4 +83,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
