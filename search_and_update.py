@@ -384,3 +384,9 @@ if colors_df.empty:
     print("Done. (No colors extracted — check queries/connectivity.)")
 else:
     print("Done.")
+
+# --- Run text metadata extractor ---
+from scripts.extract_meta import extract_folder
+extract_folder("data/articles", "data/metadata.csv")
+print("[extractor] wrote data/metadata.csv")
+
