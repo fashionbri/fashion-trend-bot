@@ -235,6 +235,34 @@ else:
 fam_summary.to_csv(OUT_DIR / "top_color_families_today.csv", index=False)
 
 # ---- 4) archive snapshot ----
+# --- optional analysis modules (safe to skip if not installed) ---
+try:
+    from modules import textures, fabrics, silhouettes, garments, accessories, motifs, mood, geography, styling, lighting
+    HAVE_MODULES = True
+except Exception:
+    HAVE_MODULES = False
+
+if HAVE_MODULES:
+    IMAGE_LIST = [str(p) for p in IM_DIR.glob("*") if p.is_file() and p.suffix.lower() in {".jpg",".jpeg",".png",".webp"}]
+
+    # lightweight modules (always run)
+    textures.run(IMAGE_LIST, OUT_DIR)
+    fabrics.run(IMAGE_LIST, OUT_DIR)
+    motifs.run(IMAGE_LIST, OUT_DIR)
+    mood.run(IMAGE_LIST, OUT_DIR)
+    geography.run(download_manifest, OUT_DIR)   # uses queries/urls
+
+    # heavy modules (run when env flag set)
+    RUN_HEAVY = os.getenv("RUN_HEAVY", "0") == "1"
+    if RUN_HEAVY:
+        garments.run(IMAGE_LIST, OUT_DIR)
+        accessories.run(IMAGE_LIST, OUT_DIR)
+        silhouettes.run(IMAGE_LIST, OUT_DIR)
+        styling.run(IMAGE_LIST, OUT_DIR)
+        lighting.run(IMAGE_LIST, OUT_DIR)
+else:
+    print("Modules folder not found — running colors only.")
+
 stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d_%H%M_UTC")
 hist = Path(f"data/history/{stamp}")
 hist.mkdir(parents=True, exist_ok=True)
