@@ -1,11 +1,10 @@
 # src/retail_tracker.py
 from datetime import datetime
-from pathlib import Path
 from typing import List
-import time
+import time, random
 import pandas as pd
 from pytrends.request import TrendReq
-from pytrends.exceptions import ResponseError
+from pytrends.exceptions import ResponseError, TooManyRequestsError
 from .config import LATEST
 
 TERMS = [
@@ -13,47 +12,78 @@ TERMS = [
     "crochet top", "cargo pants", "leather jacket"
 ]
 
+MAX_ATTEMPTS_PER_BATCH = 6       # total tries per batch
+BASE_SLEEP = 2.0                 # seconds (will backoff exponentially)
+BATCH_SIZE = 3                   # <=3 terms per call helps avoid 429s
 
 def _chunks(lst: List[str], n: int):
     for i in range(0, len(lst), n):
         yield lst[i:i + n]
 
-
-def _safe_build(pytrend: TrendReq, terms: List[str], retries: int = 3, wait: float = 2.0):
-    """Build payload with retries to avoid transient 400/429 errors on CI."""
-    last_err = None
-    for attempt in range(1, retries + 1):
+def _build_with_retry(pytrend: TrendReq, terms: List[str]) -> bool:
+    """
+    Build payload with robust retry/backoff to survive 429s on CI.
+    """
+    for attempt in range(1, MAX_ATTEMPTS_PER_BATCH + 1):
         try:
             pytrend.build_payload(
                 kw_list=terms,
                 timeframe="today 5-y",
-                geo="",    # global; set "US" if you prefer
-                gprop=""   # web search
+                geo="",     # global (set "US" if you prefer)
+                gprop=""    # web search
             )
             return True
-        except ResponseError as e:
-            last_err = e
-            time.sleep(wait * attempt)
-    if last_err:
-        raise last_err
+        except (TooManyRequestsError, ResponseError) as e:
+            # expo backoff with jitter
+            sleep_s = (BASE_SLEEP * (2 ** (attempt - 1))) + random.uniform(0, 1.25)
+            print(f"[pytrends] build_payload failed (attempt {attempt}/{MAX_ATTEMPTS_PER_BATCH}): {e}. Sleeping {sleep_s:.1f}s")
+            time.sleep(min(sleep_s, 60))
+        except Exception as e:
+            # unexpected error — short sleep & retry
+            sleep_s = BASE_SLEEP + random.uniform(0, 1.0)
+            print(f"[pytrends] unexpected error: {e}. Sleeping {sleep_s:.1f}s")
+            time.sleep(sleep_s)
     return False
 
-
 def google_trends():
-    """Pull interest_over_time for TERMS in small batches and merge."""
+    """
+    Pull interest_over_time for TERMS in small batches and merge.
+    Writes: data/latest/google_trends_YYYYMMDD.csv
+    Always writes a CSV (may be placeholder) so downstream steps won’t crash.
+    """
     pytrend = TrendReq(hl="en-US", tz=0)
     frames = []
 
-    for batch in _chunks(TERMS, 5):
-        _safe_build(pytrend, batch, retries=4, wait=2.0)
-        df = pytrend.interest_over_time()
-        if "isPartial" in df.columns:
-            df = df.drop(columns=["isPartial"])
-        frames.append(df)
-        time.sleep(1.5)
+    for batch in _chunks(TERMS, BATCH_SIZE):
+        ok = _build_with_retry(pytrend, batch)
+        if not ok:
+            print(f"[pytrends] Giving up on batch: {batch}")
+            continue
+        # request data with retry if 429 happens here
+        for attempt in range(1, MAX_ATTEMPTS_PER_BATCH + 1):
+            try:
+                df = pytrend.interest_over_time()
+                if "isPartial" in df.columns:
+                    df = df.drop(columns=["isPartial"])
+                frames.append(df)
+                break
+            except (TooManyRequestsError, ResponseError) as e:
+                sleep_s = (BASE_SLEEP * (2 ** (attempt - 1))) + random.uniform(0, 1.25)
+                print(f"[pytrends] interest_over_time failed (attempt {attempt}/{MAX_ATTEMPTS_PER_BATCH}): {e}. Sleeping {sleep_s:.1f}s")
+                time.sleep(min(sleep_s, 60))
+            except Exception as e:
+                sleep_s = BASE_SLEEP + random.uniform(0, 1.0)
+                print(f"[pytrends] unexpected error in interest_over_time: {e}. Sleeping {sleep_s:.1f}s")
+                time.sleep(sleep_s)
+
+        # small pause between batches to be polite
+        time.sleep(1.5 + random.uniform(0, 0.75))
+
+    # Always write something so later steps can proceed
+    out = LATEST / f"google_trends_{datetime.utcnow().strftime('%Y%m%d')}.csv"
 
     if not frames:
-        out = LATEST / f"google_trends_{datetime.utcnow().strftime('%Y%m%d')}.csv"
+        print("[pytrends] No frames collected; writing placeholder CSV.")
         pd.DataFrame(columns=["date"]).to_csv(out, index=False)
         return out
 
@@ -63,10 +93,8 @@ def google_trends():
         out_df = pd.merge(out_df, m, on="date", how="outer")
 
     out_df = out_df.sort_values("date")
-    out = LATEST / f"google_trends_{datetime.utcnow().strftime('%Y%m%d')}.csv"
     out_df.to_csv(out, index=False)
     return out
-
 
 if __name__ == "__main__":
     print(google_trends())
