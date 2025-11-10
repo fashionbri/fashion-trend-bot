@@ -9,7 +9,6 @@ from .config import LATEST
 BATCH_SIZE = 2
 BASE_SLEEP = 4.0
 MAX_ATTEMPTS_PER_BATCH = 8
-
 def google_trends() -> Path:
     """
     Pull Google Trends for your keyword list in small batches with backoff.
