@@ -165,6 +165,7 @@ def dominant_colors(path: Path, k: int = K_COLORS):
 # ---- 1) search + download (parallel) ----
 download_manifest = []
 for q in QUERIES:
+ print(f"🔍 Searching for '{q}' (recency='w' → past week)")
 urls = serpapi_search_urls(q, IMAGES_PER_QUERY, recency="w")
     prefix = _slug(q)
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
