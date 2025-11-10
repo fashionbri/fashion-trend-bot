@@ -6,33 +6,16 @@ from typing import List, Dict
 from .color_to_pantone import PantoneLookup
 
 def dominant_colors(pil_img: Image.Image, k: int = 5) -> List[str]:
-    """
-    Return k hex colors from an image (simple frequency sampler).
-    """
     arr = np.array(pil_img.convert("RGB"))
     pixels = arr.reshape(-1, 3)
-
-    # sample to keep it fast on large images
     if pixels.shape[0] > 8000:
         idx = np.random.choice(pixels.shape[0], 8000, replace=False)
         pixels = pixels[idx]
-
     cnt = Counter(map(tuple, pixels))
     top = [c for c, _ in cnt.most_common(k)]
     return [f"#{r:02x}{g:02x}{b:02x}" for r, g, b in top]
 
 def dominant_with_pantone(pil_img: Image.Image, k: int = 5) -> List[Dict]:
-    """
-    Return list of dicts:
-    [
-      {"hex": "#c7b299", "pantone_code": "...", "pantone_name": "...", "pantone_hex": "#CBBBA0", "distance": 2.1},
-      ...
-    ]
-    """
     hexes = dominant_colors(pil_img, k=k)
-    lookup = PantoneLookup()
-    out = []
-    for h in hexes:
-        match = lookup.nearest(h)
-        out.append({"hex": h, **match})
-    return out
+    lookup = PantoneLookup()  # loads FULL 3200+ list
+    return [{ "hex": h, **lookup.nearest(h) } for h in hexes]
