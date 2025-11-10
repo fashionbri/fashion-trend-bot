@@ -54,7 +54,21 @@ def _slug(s: str) -> str:
     return re.sub(r"[^a-zA-Z0-9._-]+", "_", s).strip("_")[:60]
 
 
-def serpapi_search_urls(query: str, target_count: int) -> list[str]:
+def serpapi_search_urls(query: str, target_count: int, recency: str = "w") -> list[str]:
+    """Paginate SerpAPI Google Images results until target_count or pages exhausted.
+       recency: 'd' (past day), 'w' (past week), 'm' (past month)"""
+    urls = []
+    pages = math.ceil(target_count / PAGE_SIZE)
+    for i in range(pages):
+        params = {
+            "engine": "google_images",
+            "q": query,
+            "ijn": i,
+            "api_key": SERP_KEY,
+            "tbs": f"qdr:{recency}"   # ⬅️ NEW: time-bounded results
+        }
+        ...
+
     """Paginate SerpAPI Google Images results until target_count or pages exhausted."""
     urls = []
     pages = math.ceil(target_count / PAGE_SIZE)
@@ -151,7 +165,7 @@ def dominant_colors(path: Path, k: int = K_COLORS):
 # ---- 1) search + download (parallel) ----
 download_manifest = []
 for q in QUERIES:
-    urls = serpapi_search_urls(q, IMAGES_PER_QUERY)
+urls = serpapi_search_urls(q, IMAGES_PER_QUERY, recency="w")
     prefix = _slug(q)
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
         futures = [ex.submit(download_image, u, prefix) for u in urls]
