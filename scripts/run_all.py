@@ -1,6 +1,10 @@
 """
 End-to-end pipeline runner for the Fashion Trend Bot.
 
+import sys, os
+sys.path.append(os.path.dirname(os.path.dirname(__file__)))
+
+
 Steps:
 1) Scrape runway SERP → data/history/runway_serp_*.csv
 2) Pull retail signals (Google Trends) → data/latest/google_trends_*.csv
