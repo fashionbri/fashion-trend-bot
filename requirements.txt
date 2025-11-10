@@ -1,6 +1,11 @@
-requests
-pillow
-tqdm
-opencv-python-headless
 pandas
 numpy
+requests
+tqdm
+prophet
+pytrends
+Pillow
+opencv-python
+beautifulsoup4
+lxml
+scikit-learn
