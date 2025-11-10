@@ -1,0 +1,2 @@
+mkdir -p data/images
+touch data/images/.gitkeep
