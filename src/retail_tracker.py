@@ -44,7 +44,7 @@ def google_trends():
     Writes: data/latest/google_trends_YYYYMMDD.csv
     """
     # Locale + tz help stabilize CI runs
-    pytrend = TrendReq(hl="en-US", tz=0, retries=2, backoff_factor=0.5)
+pytrend = TrendReq(hl="en-US", tz=0, requests_args={"timeout": 30})
     frames = []
 
     for batch in _chunks(TERMS, 5):   # <= 5 terms per call is safer
