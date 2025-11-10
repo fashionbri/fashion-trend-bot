@@ -23,6 +23,7 @@ MIN_BYTES = 20_000
 OUT_DIR = Path("data/latest")
 MAX_WORKERS = 8                # parallel downloads
 PAGE_SIZE = 100                # SerpAPI page size for images
+RECENCY_MODE = os.getenv("RECENCY_MODE", "w")  # d = day, w = week, m = month
 K_COLORS = 5
 RANDOM_SEED = 42               # reproducible KMeans
 MAX_SIDE = 768                 # resize longer side for speed
@@ -165,9 +166,17 @@ def dominant_colors(path: Path, k: int = K_COLORS):
 # ---- 1) search + download (parallel) ----
 download_manifest = []
 for q in QUERIES:
- print(f"🔍 Searching for '{q}' (recency='w' → past week)")
-urls = serpapi_search_urls(q, IMAGES_PER_QUERY, recency="w")
+    print(f"🔍 Searching for '{q}' (recency='{RECENCY_MODE}')")
+    urls = serpapi_search_urls(q, IMAGES_PER_QUERY, recency=RECENCY_MODE)
     prefix = _slug(q)
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
+        futures = [ex.submit(download_image, u, prefix) for u in urls]
+        for f in tqdm(as_completed(futures), total=len(futures), desc=f"Downloading {q[:28]}"):
+            res = f.result()
+            if res:
+                download_manifest.append({"query": q, "path": res["path"], "url": res["url"]})
+    time.sleep(0.5)  # page-level pause
+
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
         futures = [ex.submit(download_image, u, prefix) for u in urls]
         for f in tqdm(as_completed(futures), total=len(futures), desc=f"Downloading {q[:28]}"):
