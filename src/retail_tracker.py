@@ -12,9 +12,12 @@ TERMS = [
     "crochet top", "cargo pants", "leather jacket"
 ]
 
-MAX_ATTEMPTS_PER_BATCH = 6       # total tries per batch
-BASE_SLEEP = 2.0                 # seconds (will backoff exponentially)
-BATCH_SIZE = 3                   # <=3 terms per call helps avoid 429s
+BATCH_SIZE = 2
+BASE_SLEEP = 4.0
+MAX_ATTEMPTS_PER_BATCH = 8
+# TrendReq with built-in retry/backoff at HTTP level:
+pytrend = TrendReq(hl="en-US", tz=0, timeout=(10, 30), retries=8, backoff_factor=4)
+               # <=3 terms per call helps avoid 429s
 
 def _chunks(lst: List[str], n: int):
     for i in range(0, len(lst), n):
@@ -98,3 +101,9 @@ def google_trends():
 
 if __name__ == "__main__":
     print(google_trends())
+
+# at the top of google_trends()
+today_out = LATEST / f"google_trends_{datetime.utcnow():%Y%m%d}.csv"
+if today_out.exists() and today_out.stat().st_size > 50:
+    print("[pytrends] using cached today file:", today_out)
+    return today_out
