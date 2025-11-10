@@ -83,3 +83,8 @@ def main():
 
 if __name__ == "__main__":
     main()
+from src.visualize import visualize_correlations, visualize_forecasts
+
+print("6) Generating visuals…")
+visualize_correlations()
+visualize_forecasts()
