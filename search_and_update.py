@@ -11,12 +11,89 @@ import cv2
 import pandas as pd
 
 # ========= Settings you can edit =========
-QUERIES = [
-    "vogue runway emerald dress",
-    "leopard print runway 1990s",
-    "Gucci Fall 2013 runway",
-    "Chanel haute couture 2020",
-    "Balmain burgundy runway 2025",
+# ========= Query Configuration =========
+import random
+
+# 1️⃣ Fixed hand-picked queries — your curated future-facing set
+CURATED_QUERIES = [
+    # global runway signals
+    "Paris Fashion Week runway 2025",
+    "Milan Fashion Week runway 2025",
+    "New York Fashion Week runway 2025",
+    "London Fashion Week runway 2025",
+    "Tokyo Fashion Week runway 2025",
+    "Seoul Fashion Week runway 2025",
+
+    # early 2026 collections (forward look)
+    "Paris Fashion Week runway 2026",
+    "Milan Fashion Week runway 2026",
+    "New York Fashion Week runway 2026",
+    "London Fashion Week runway 2026",
+
+    # street style
+    "Paris Fashion Week street style 2025",
+    "Milan Fashion Week street style 2025",
+    "New York Fashion Week street style 2025",
+    "London Fashion Week street style 2025",
+    "Tokyo Fashion Week street style 2025",
+    "Seoul Fashion Week street style 2025",
+
+    # campaign / lookbook / editorial data
+    "fashion lookbook 2025",
+    "fashion campaign 2025",
+    "fashion editorial 2025",
+    "fashion presentation 2025",
+    "fashion lookbook 2026",
+    "fashion campaign 2026",
+    "fashion editorial 2026",
+    "fashion presentation 2026",
+
+    # runway details
+    "runway close up details 2025",
+    "runway backstage fashion 2025",
+    "runway backstage fashion 2026",
+    "fashion week accessories 2025",
+    "fashion week accessories 2026",
+    "global fashion week street style 2025",
+    "global fashion week street style 2026"
+]
+
+# 2️⃣ Auto-generated global combos — to expand diversity
+CITIES = [
+    "Paris", "Milan", "New York", "London",
+    "Tokyo", "Seoul", "Copenhagen", "Stockholm",
+    "Sydney", "Los Angeles"
+]
+CONTEXTS = [
+    "street style", "runway", "backstage",
+    "lookbook", "fashion campaign", "editorial", "presentation"
+]
+YEARS = ["2025", "2026"]
+
+AUTO_QUERIES = [
+    f"{city} Fashion Week {ctx} {year}"
+    for city in CITIES
+    for ctx in ["street style", "runway", "backstage"]
+    for year in YEARS
+] + [
+    f"{ctx} fashion {year}"
+    for ctx in CONTEXTS
+    for year in YEARS
+]
+
+# 3️⃣ Combine both curated + generated lists
+ALL_QUERIES = list(set(CURATED_QUERIES + AUTO_QUERIES))
+
+# 4️⃣ Shuffle randomly each run (fresh sample order)
+random.seed()           # new seed every run
+random.shuffle(ALL_QUERIES)
+
+# 5️⃣ Limit per run if you want (or comment out to use all)
+QUERIES = ALL_QUERIES[:25]   # adjust number here if you want smaller runs
+# =======================================
+
+
+
 ]
 IMAGES_PER_QUERY = 60          # target per query
 MIN_BYTES = 20_000
