@@ -3,14 +3,17 @@ import os
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA = ROOT / "data"
-HISTORY = DATA / "history"      # your "raw"
-LATEST = DATA / "latest"        # your "processed"
+HISTORY = DATA / "history"      # this matches your folder
+LATEST = DATA / "latest"        # this matches your folder
 IMAGES = DATA / "images"
 MODELS = ROOT / "models"
 
-# make sure directories exist
+# create folders automatically
 for p in (DATA, HISTORY, LATEST, IMAGES, MODELS):
     p.mkdir(parents=True, exist_ok=True)
 
-# env vars (for keys, etc.)
-SERP_API_KEY = os.getenv("SERP_API_KEY", "")  # set in GitHub Actions secrets
+# keep backward compatibility if scripts still call PROCESSED
+PROCESSED = LATEST
+
+# API keys
+SERP_API_KEY = os.getenv("SERP_API_KEY", "")
