@@ -93,19 +93,17 @@ QUERIES = ALL_QUERIES[:25]   # adjust number here if you want smaller runs
 # =======================================
 
 
-
-]
-IMAGES_PER_QUERY = 60          # target per query
+IMAGES_PER_QUERY = 60        # target per query
 MIN_BYTES = 20_000
 OUT_DIR = Path("data/latest")
-MAX_WORKERS = 8                # parallel downloads
-PAGE_SIZE = 100                # SerpAPI page size for images
+MAX_WORKERS = 8              # parallel downloads
+PAGE_SIZE = 100              # SerpAPI page size for images
 RECENCY_MODE = os.getenv("RECENCY_MODE", "w")  # d = day, w = week, m = month
 K_COLORS = 5
-RANDOM_SEED = 42               # reproducible KMeans
-MAX_SIDE = 768                 # resize longer side for speed
-SAMPLE_PIXELS = 120_000        # subsample pixels for kmeans
-TIMEOUT = 25                   # network timeout (seconds)
+RANDOM_SEED = 42             # reproducible KMeans
+MAX_SIDE = 768               # resize longer side for speed
+SAMPLE_PIXELS = 120_000      # subsample pixels for kmeans
+TIMEOUT = 25                 # network timeout (seconds)
 # ========================================
 
 SERP_KEY = os.environ.get("SERP_API_KEY")
@@ -143,22 +141,11 @@ def serpapi_search_urls(query: str, target_count: int, recency: str = "w") -> li
             "q": query,
             "ijn": i,
             "api_key": SERP_KEY,
-            "tbs": f"qdr:{recency}"   # ⬅️ NEW: time-bounded results
+            "tbs": f"qdr:{recency}"  # limit to recent images
         }
-        ...
-
-    """Paginate SerpAPI Google Images results until target_count or pages exhausted."""
-    urls = []
-    pages = math.ceil(target_count / PAGE_SIZE)
-    for i in range(pages):
-        params = {"engine": "google_images", "q": query, "ijn": i, "api_key": SERP_KEY}
         for attempt in range(3):
             try:
-                r = session.get(
-                    "https://serpapi.com/search.json",
-                    params=params,
-                    timeout=TIMEOUT
-                )
+                r = session.get("https://serpapi.com/search.json", params=params, timeout=TIMEOUT)
                 r.raise_for_status()
                 data = r.json()
                 batch = [img.get("original") for img in data.get("images_results", []) if img.get("original")]
@@ -166,17 +153,34 @@ def serpapi_search_urls(query: str, target_count: int, recency: str = "w") -> li
                 break
             except Exception:
                 time.sleep(1.5 * (attempt + 1))
-        time.sleep(0.4)  # gentle pacing
+        time.sleep(0.4)
         if len(urls) >= target_count:
             break
-    # dedupe while preserving order
-    seen, ordered = set(), []
+
+    # --- dedupe + cap per domain (prevents one site from dominating) ---
+    seen_per_domain = {}
+    safe_urls = []
     for u in urls:
-        if u and u not in seen:
+        if not u:
+            continue
+        try:
+            domain = re.findall(r"https?://([^/]+)/", u)[0].lower()
+        except Exception:
+            domain = "unknown"
+        cnt = seen_per_domain.get(domain, 0)
+        if cnt < 5:  # cap per domain (tweak 3–8 if you like)
+            safe_urls.append(u)
+            seen_per_domain[domain] = cnt + 1
+
+    # final dedupe while preserving order
+    seen = set()
+    ordered = []
+    for u in safe_urls:
+        if u not in seen:
             seen.add(u)
             ordered.append(u)
-    return ordered[:target_count]
 
+    return ordered[:target_count]
 
 def download_image(url: str, prefix: str) -> dict | None:
     for attempt in range(2):  # tiny retry for flaky hosts
@@ -245,6 +249,11 @@ download_manifest = []
 for q in QUERIES:
     print(f"🔍 Searching for '{q}' (recency='{RECENCY_MODE}')")
     urls = serpapi_search_urls(q, IMAGES_PER_QUERY, recency=RECENCY_MODE)
+
+    if not urls:
+        print(f"⚠️ No URLs found for: {q}")
+        continue
+
     prefix = _slug(q)
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
         futures = [ex.submit(download_image, u, prefix) for u in urls]
@@ -252,15 +261,8 @@ for q in QUERIES:
             res = f.result()
             if res:
                 download_manifest.append({"query": q, "path": res["path"], "url": res["url"]})
-    time.sleep(0.5)  # page-level pause
+    time.sleep(0.5)  # polite pause
 
-    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
-        futures = [ex.submit(download_image, u, prefix) for u in urls]
-        for f in tqdm(as_completed(futures), total=len(futures), desc=f"Downloading {q[:28]}"):
-            res = f.result()
-            if res:
-                download_manifest.append({"query": q, "path": res["path"], "url": res["url"]})
-    time.sleep(0.5)  # page-level pause
 
 pd.DataFrame(download_manifest).to_csv(OUT_DIR / "download_manifest.csv", index=False)
 
