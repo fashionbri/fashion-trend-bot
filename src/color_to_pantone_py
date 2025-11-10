@@ -1,0 +1,65 @@
+# src/color_to_pantone.py
+from pathlib import Path
+import pandas as pd
+from colorsys import rgb_to_hsv
+from typing import Tuple, Optional
+from .config import DATA
+import math
+
+# --- small helpers ---
+def hex_to_rgb(h: str) -> Tuple[int,int,int]:
+    h = h.strip().lstrip("#")
+    return tuple(int(h[i:i+2], 16) for i in (0,2,4))
+
+def rgb_to_xyz(r, g, b):
+    # sRGB to XYZ
+    def to_lin(c):
+        c = c/255.0
+        return c/12.92 if c <= 0.04045 else ((c+0.055)/1.055)**2.4
+    r, g, b = to_lin(r), to_lin(g), to_lin(b)
+    X = r*0.4124 + g*0.3576 + b*0.1805
+    Y = r*0.2126 + g*0.7152 + b*0.0722
+    Z = r*0.0193 + g*0.1192 + b*0.9505
+    return (X, Y, Z)
+
+def xyz_to_lab(x, y, z):
+    # D65 reference white
+    Xn, Yn, Zn = 0.95047, 1.00000, 1.08883
+    def f(t):
+        return t**(1/3) if t > 0.008856 else (7.787*t + 16/116)
+    fx, fy, fz = f(x/Xn), f(y/Yn), f(z/Zn)
+    L = 116*fy - 16
+    a = 500*(fx - fy)
+    b = 200*(fy - fz)
+    return (L, a, b)
+
+def hex_to_lab(h: str):
+    r, g, b = hex_to_rgb(h)
+    X, Y, Z = rgb_to_xyz(r, g, b)
+    return xyz_to_lab(X, Y, Z)
+
+def delta_e(lab1, lab2):
+    # simple CIE76 (good enough for nearest neighbor)
+    return math.sqrt(sum((a-b)**2 for a,b in zip(lab1, lab2)))
+
+# --- loader and matcher ---
+class PantoneLookup:
+    def __init__(self, csv_path: Optional[Path] = None):
+        csv_path = csv_path or (DATA / "pantone" / "pantone_swatches.csv")
+        df = pd.read_csv(csv_path)
+        df["hex"] = df["hex"].str.strip()
+        df["lab"] = df["hex"].map(hex_to_lab)
+        self.df = df[["code","name","hex","lab"]]
+
+    def nearest(self, hex_color: str):
+        target = hex_to_lab(hex_color)
+        # compute distances
+        dists = self.df["lab"].apply(lambda lab: delta_e(target, lab))
+        idx = dists.idxmin()
+        row = self.df.loc[idx]
+        return {
+            "pantone_code": row["code"],
+            "pantone_name": row["name"],
+            "pantone_hex": row["hex"],
+            "distance": float(dists.loc[idx])
+        }
