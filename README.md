@@ -1,4 +1,4 @@
-#  Fashion Trend Bot <333
+#  Fashion Trend Bot <333 (I'm Just A Girl)
 
 **Fashion Trend Bot** is an automated visual research tool that tracks emerging fashion trends by scanning runway and street-style imagery online twice a day.  
 It uses AI-powered image search and color analysis to detect recurring hues, textures, and moods from the latest collections, campaigns, and cultural visuals.
