@@ -2,8 +2,8 @@ name: fashion-forecast-bot
 
 on:
   schedule:
-    - cron: '0 6 * * *'     # runs daily at 06:00 UTC (10 PM PT)
-    - cron: '0 18 * * *'    # runs daily at 18:00 UTC (10 AM PT)
+    - cron: '7 6 * * *'     # 06:07 UTC
+    - cron: '13 18 * * *'   # 18:13 UTC
   workflow_dispatch: {}      # allows manual “Run workflow” button
 
 jobs:
