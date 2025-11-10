@@ -1,65 +1,132 @@
 # src/color_to_pantone.py
+from __future__ import annotations
 from pathlib import Path
-import pandas as pd
-from colorsys import rgb_to_hsv
-from typing import Tuple, Optional
-from .config import DATA
+from typing import Tuple, Optional, List, Dict, Any
 import math
+import numpy as np
+import pandas as pd
+from .config import DATA
 
-# --- small helpers ---
-def hex_to_rgb(h: str) -> Tuple[int,int,int]:
+# ---------- color math (sRGB D65 → XYZ → Lab) ----------
+def _hex_to_rgb_tuple(h: str) -> Tuple[int, int, int]:
     h = h.strip().lstrip("#")
-    return tuple(int(h[i:i+2], 16) for i in (0,2,4))
+    if len(h) == 3:
+        h = "".join(ch * 2 for ch in h)
+    return (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16))
 
-def rgb_to_xyz(r, g, b):
-    # sRGB to XYZ
-    def to_lin(c):
-        c = c/255.0
-        return c/12.92 if c <= 0.04045 else ((c+0.055)/1.055)**2.4
-    r, g, b = to_lin(r), to_lin(g), to_lin(b)
-    X = r*0.4124 + g*0.3576 + b*0.1805
-    Y = r*0.2126 + g*0.7152 + b*0.0722
-    Z = r*0.0193 + g*0.1192 + b*0.9505
-    return (X, Y, Z)
+def _srgb_to_linear(c: np.ndarray) -> np.ndarray:
+    # c in [0,1]
+    mask = (c <= 0.04045)
+    out = np.empty_like(c)
+    out[mask] = c[mask] / 12.92
+    out[~mask] = ((c[~mask] + 0.055) / 1.055) ** 2.4
+    return out
 
-def xyz_to_lab(x, y, z):
+def _rgb_to_xyz(rgb01: np.ndarray) -> np.ndarray:
+    # rgb01: shape (N, 3) in [0,1]
+    M = np.array([
+        [0.4124, 0.3576, 0.1805],
+        [0.2126, 0.7152, 0.0722],
+        [0.0193, 0.1192, 0.9505],
+    ])
+    return rgb01 @ M.T  # (N,3)
+
+def _xyz_to_lab(xyz: np.ndarray) -> np.ndarray:
     # D65 reference white
-    Xn, Yn, Zn = 0.95047, 1.00000, 1.08883
+    white = np.array([0.95047, 1.00000, 1.08883])
+    xr, yr, zr = (xyz / white.T).T
     def f(t):
-        return t**(1/3) if t > 0.008856 else (7.787*t + 16/116)
-    fx, fy, fz = f(x/Xn), f(y/Yn), f(z/Zn)
-    L = 116*fy - 16
-    a = 500*(fx - fy)
-    b = 200*(fy - fz)
-    return (L, a, b)
+        return np.where(t > 0.008856, np.cbrt(t), 7.787 * t + 16.0/116.0)
+    fx, fy, fz = f(xr), f(yr), f(zr)
+    L = (116.0 * fy) - 16.0
+    a = 500.0 * (fx - fy)
+    b = 200.0 * (fy - fz)
+    return np.stack([L, a, b], axis=1)
 
-def hex_to_lab(h: str):
-    r, g, b = hex_to_rgb(h)
-    X, Y, Z = rgb_to_xyz(r, g, b)
-    return xyz_to_lab(X, Y, Z)
+def _hex_to_lab_single(h: str) -> Tuple[float, float, float]:
+    r, g, b = _hex_to_rgb_tuple(h)
+    rgb01 = np.array([[r, g, b]], dtype=float) / 255.0
+    xyz = _rgb_to_xyz(_srgb_to_linear(rgb01))
+    lab = _xyz_to_lab(xyz)
+    L, a, b = lab[0]
+    return (float(L), float(a), float(b))
 
-def delta_e(lab1, lab2):
-    # simple CIE76 (good enough for nearest neighbor)
-    return math.sqrt(sum((a-b)**2 for a,b in zip(lab1, lab2)))
-
-# --- loader and matcher ---
+# ---------- loader & matcher ----------
 class PantoneLookup:
-    def __init__(self, csv_path: Optional[Path] = None):
-        csv_path = csv_path or (DATA / "pantone" / "pantone_swatches.csv")
+    """
+    Loads data/pantone/colors.csv and provides fast HEX→nearest Pantone mapping
+    using CIE76 ΔE in Lab space.
+    """
+    def __init__(self, csv_path: Optional[Path] = None, cache_ok: bool = True):
+        csv_path = csv_path or (DATA / "pantone" / "colors.csv")
         df = pd.read_csv(csv_path)
-        df["hex"] = df["hex"].str.strip()
-        df["lab"] = df["hex"].map(hex_to_lab)
-        self.df = df[["code","name","hex","lab"]]
 
-    def nearest(self, hex_color: str):
-        target = hex_to_lab(hex_color)
-        # compute distances
-        dists = self.df["lab"].apply(lambda lab: delta_e(target, lab))
-        idx = dists.idxmin()
-        row = self.df.loc[idx]
+        # normalize column names
+        cols = {c.lower().strip(): c for c in df.columns}
+        # try to locate needed columns regardless of exact names
+        code_col = next((cols[k] for k in cols if k in ("code","pantone","pantone_code")), None)
+        name_col = next((cols[k] for k in cols if k in ("name","pantone_name","label")), None)
+        hex_col  = next((cols[k] for k in cols if k in ("hex","hex_code","color","colour")), None)
+        if not (code_col and hex_col):
+            raise ValueError("colors.csv must have at least columns: code, hex (name optional)")
+
+        df = df[[code_col, hex_col] + ([name_col] if name_col else [])].copy()
+        df.rename(columns={code_col: "code", hex_col: "hex"}, inplace=True)
+        if name_col:
+            df.rename(columns={name_col: "name"}, inplace=True)
+        else:
+            df["name"] = df["code"]
+
+        # clean hex values
+        df["hex"] = df["hex"].astype(str).str.strip().str.upper()
+        df["hex"] = df["hex"].str.replace("^#", "", regex=True)
+        df = df[df["hex"].str.match(r"^[0-9A-F]{6}$", na=False)].copy()
+
+        # drop duplicates
+        df = df.drop_duplicates(subset=["code", "hex"])
+
+        # precompute Lab & numpy arrays for fast distance calc
+        if cache_ok:
+            labs = []
+            for h in df["hex"].tolist():
+                L, a, b = _hex_to_lab_single("#" + h)
+                labs.append((L, a, b))
+            lab_arr = np.array(labs, dtype=float)                 # (M,3)
+        else:
+            # compute lazily (not recommended)
+            lab_arr = None
+
+        self._df = df.reset_index(drop=True)
+        self._lab = lab_arr                                      # (M,3)
+        self._hex = df["hex"].to_numpy()                         # (M,)
+        self._code = df["code"].to_numpy()                       # (M,)
+        self._name = df["name"].to_numpy()                       # (M,)
+
+    def nearest(self, hex_color: str) -> Dict[str, Any]:
+        """Return nearest Pantone for a single hex string like '#C7B299' or 'C7B299'."""
+        h = hex_color.strip().lstrip("#")
+        if not len(h) in (3, 6):
+            raise ValueError(f"Invalid hex: {hex_color}")
+        if len(h) == 3:
+            h = "".join(ch*2 for ch in h)
+        target_Lab = np.array([_hex_to_lab_single("#" + h)], dtype=float)  # (1,3)
+
+        # distances in Lab (CIE76)
+        d = np.linalg.norm(self._lab - target_Lab, axis=1)  # (M,)
+        i = int(np.argmin(d))
         return {
-            "pantone_code": row["code"],
-            "pantone_name": row["name"],
-            "pantone_hex": row["hex"],
-            "distance": float(dists.loc[idx])
+            "hex": "#" + h.upper(),
+            "pantone_code": str(self._code[i]),
+            "pantone_name": str(self._name[i]),
+            "pantone_hex": "#" + str(self._hex[i]),
+            "distance": float(d[i]),
         }
+
+    def nearest_many(self, hex_list: List[str]) -> List[Dict[str, Any]]:
+        out = []
+        for h in hex_list:
+            try:
+                out.append(self.nearest(h))
+            except Exception as e:
+                out.append({"hex": h, "error": str(e)})
+        return out
