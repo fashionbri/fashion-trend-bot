@@ -7,6 +7,7 @@ from pytrends.request import TrendReq
 from pytrends.exceptions import ResponseError, TooManyRequestsError
 from .config import LATEST
 
+# ===== Config =====
 TERMS = [
     "sheer dress", "metallic skirt", "oversized blazer", "ballet flats", "kitten heels",
     "crochet top", "cargo pants", "leather jacket"
@@ -15,9 +16,9 @@ TERMS = [
 BATCH_SIZE = 2
 BASE_SLEEP = 4.0
 MAX_ATTEMPTS_PER_BATCH = 8
-# TrendReq with built-in retry/backoff at HTTP level:
+
+# One shared TrendReq with HTTP-level retries/backoff.
 pytrend = TrendReq(hl="en-US", tz=0, timeout=(10, 30), retries=8, backoff_factor=4)
-               # <=3 terms per call helps avoid 429s
 
 def _chunks(lst: List[str], n: int):
     for i in range(0, len(lst), n):
@@ -37,7 +38,7 @@ def _build_with_retry(pytrend: TrendReq, terms: List[str]) -> bool:
             )
             return True
         except (TooManyRequestsError, ResponseError) as e:
-            # expo backoff with jitter
+            # exponential backoff with jitter
             sleep_s = (BASE_SLEEP * (2 ** (attempt - 1))) + random.uniform(0, 1.25)
             print(f"[pytrends] build_payload failed (attempt {attempt}/{MAX_ATTEMPTS_PER_BATCH}): {e}. Sleeping {sleep_s:.1f}s")
             time.sleep(min(sleep_s, 60))
@@ -53,8 +54,14 @@ def google_trends():
     Pull interest_over_time for TERMS in small batches and merge.
     Writes: data/latest/google_trends_YYYYMMDD.csv
     Always writes a CSV (may be placeholder) so downstream steps won’t crash.
+    Also caches the 'today' CSV and reuses it if it already exists and is non-trivial.
     """
-    pytrend = TrendReq(hl="en-US", tz=0)
+    # --- cache check (today) ---
+    today_out = LATEST / f"google_trends_{datetime.utcnow():%Y%m%d}.csv"
+    if today_out.exists() and today_out.stat().st_size > 50:
+        print("[pytrends] using cached today file:", today_out)
+        return today_out
+
     frames = []
 
     for batch in _chunks(TERMS, BATCH_SIZE):
@@ -62,6 +69,7 @@ def google_trends():
         if not ok:
             print(f"[pytrends] Giving up on batch: {batch}")
             continue
+
         # request data with retry if 429 happens here
         for attempt in range(1, MAX_ATTEMPTS_PER_BATCH + 1):
             try:
@@ -83,7 +91,7 @@ def google_trends():
         time.sleep(1.5 + random.uniform(0, 0.75))
 
     # Always write something so later steps can proceed
-    out = LATEST / f"google_trends_{datetime.utcnow().strftime('%Y%m%d')}.csv"
+    out = today_out
 
     if not frames:
         print("[pytrends] No frames collected; writing placeholder CSV.")
@@ -101,9 +109,3 @@ def google_trends():
 
 if __name__ == "__main__":
     print(google_trends())
-
-# at the top of google_trends()
-today_out = LATEST / f"google_trends_{datetime.utcnow():%Y%m%d}.csv"
-if today_out.exists() and today_out.stat().st_size > 50:
-    print("[pytrends] using cached today file:", today_out)
-    return today_out
