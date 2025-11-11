@@ -1,169 +1,220 @@
-"""
-End-to-end pipeline runner for the Fashion Trend Bot.
 
-Steps:
-1) Scrape runway SERP → data/history/runway_serp_*.csv
-2) Pull retail signals (Google Trends) → data/latest/google_trends_*.csv
-3) Correlate runway ↔ retail → data/latest/runway_retail_corr_*.csv
-4) Forecast per keyword → data/latest/forecast_kw_*.csv  and models/*
-5) (Optional) Evaluate with time-aware CV → data/latest/eval_*.csv
-"""
 
-# Ensure the repository root is on sys.path so "src" can be imported
-import sys, os
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-
+# =========================
+# COMPACT DAILY + WEEKLY OUTPUTS
+# (Append this entire block at the end of scripts/run_all.py)
+# =========================
 from pathlib import Path
-import pandas as pd
-
-# --- Import pipeline modules ---
-from src.runway_scraper import run as scrape_runway
-from src.retail_tracker import google_trends
-from src.correlate import run as correlate
-from src.forecast import run as forecast
-
-# Evaluation is optional—will be skipped if module isn't present
-try:
-    from src.evaluate import run_evaluation_pipeline
-    HAVE_EVAL = True
-except Exception:
-    HAVE_EVAL = False
-
-# Folders from config (your processed folder is data/latest)
-from src.config import LATEST
-
-def run_eval():
-    """Run time-aware evaluation if evaluation module is available."""
-    if not HAVE_EVAL:
-        print("5) Evaluation: module not found, skipping.")
-        return
-
-    latest_corr = sorted(LATEST.glob("runway_retail_corr_*.csv"))
-    if not latest_corr:
-        print("5) Evaluation: no correlation file found, skipping.")
-        return
-
-    df = pd.read_csv(latest_corr[-1], parse_dates=["date"])
-    needed = ["date", "kw", "runway_count"]
-    if not all(c in df.columns for c in needed):
-        print("5) Evaluation: needed columns missing, skipping.")
-        return
-
-    keep = [c for c in ["date", "kw", "runway_count", "retail_count"] if c in df.columns]
-    df = df[keep].dropna(subset=["date", "kw", "runway_count"])
-
-    holdout, cv = run_evaluation_pipeline(df)
-
-    out1 = LATEST / "eval_holdout_latest.csv"
-    out2 = LATEST / "eval_cv_summary_latest.csv"
-    holdout.to_csv(out1, index=False)
-    cv.to_csv(out2, index=False)
-    print(f"   → {out1}")
-    print(f"   → {out2}")
-
-def main():
-    print("1) Scraping runway SERP…")
-    f1 = scrape_runway()
-    print(f"   → {f1}")
-
-    print("2) Pulling Google Trends…")
-    f2 = google_trends()
-    print(f"   → {f2}")
-
-    print("3) Correlating runway ↔ retail…")
-    f3 = correlate()
-    print(f"   → {f3}")
-
-    print("4) Forecasting…")
-    f4 = forecast()
-    print(f"   → {f4}")
-
-    print("5) Evaluating (optional)…")
-    run_eval()
-
-if __name__ == "__main__":
-    main()
-from src.visualize import visualize_correlations, visualize_forecasts
-
-print("6) Generating visuals…")
-visualize_correlations()
-visualize_forecasts()
-# ==== NEW: Weekly roundup generator ====
 from datetime import datetime, timedelta
 import pandas as pd
-from pathlib import Path
 
-LATEST = Path("data/latest")
-HISTORY = Path("data/history")
-HISTORY.mkdir(parents=True, exist_ok=True)
+# Resolve paths (do not rely on other modules here)
+_LATEST = Path("data/latest")
+_HISTORY = Path("data/history")
+_HISTORY.mkdir(parents=True, exist_ok=True)
 
-def weekly_roundup():
-    cutoff = datetime.utcnow() - timedelta(days=7)
+def _safe_read_csv(p: Path) -> pd.DataFrame:
+    try:
+        return pd.read_csv(p)
+    except Exception:
+        return pd.DataFrame()
+
+def write_daily_summary():
+    """
+    Produce small, human-usable daily outputs:
+      - data/latest/daily_summary.md
+      - data/latest/top_signals.csv
+      - data/latest/top_images_manifest.csv
+      - data/history/summary_YYYYMMDD.md (archive)
+    """
+    top_colors = _safe_read_csv(_LATEST / "top_colors_today.csv")
+    color_fams = _safe_read_csv(_LATEST / "top_color_families_today.csv")
+    manifest   = _safe_read_csv(_LATEST / "download_manifest.csv")
+
+    # latest google trends file (if present)
+    gt = pd.DataFrame()
+    gt_candidates = sorted(_LATEST.glob("google_trends_*.csv"))
+    if gt_candidates:
+        gt = _safe_read_csv(gt_candidates[-1])
+
+    # ---- Build compact signals table ----
     rows = []
 
-    # Collect all google_trends CSVs in latest or history
-    trend_files = list(LATEST.glob("google_trends_*.csv")) + list(HISTORY.glob("google_trends_*.csv"))
+    # Colors (top 8)
+    if not top_colors.empty:
+        for _, r in top_colors.head(8).iterrows():
+            rows.append({
+                "signal": "color",
+                "name": str(r.get("hex") or r.get("color") or "").strip(),
+                "score": float(r.get("share", 0) or r.get("rank_share", 0)),
+                "extra": "hex"
+            })
+
+    # Color families (top 6)
+    if not color_fams.empty:
+        for _, r in color_fams.head(6).iterrows():
+            rows.append({
+                "signal": "color_family",
+                "name": str(r.get("family") or "").strip(),
+                "score": float(r.get("share", 0)),
+                "extra": ""
+            })
+
+    # Google Trends (top 10 terms on latest row)
+    if not gt.empty:
+        try:
+            latest_row = gt.iloc[-1]
+            sr = latest_row.drop(labels=[c for c in gt.columns if str(c).lower() in ("date", "ispartial")], errors="ignore")
+            sr = pd.to_numeric(sr, errors="coerce")
+            sr = sr.sort_values(ascending=False).head(10)
+            for term, val in sr.items():
+                rows.append({"signal": "trend_term", "name": str(term), "score": float(val), "extra": ""})
+        except Exception:
+            pass
+
+    top_signals = pd.DataFrame(rows)
+    top_signals_out = _LATEST / "top_signals.csv"
+    top_signals.to_csv(top_signals_out, index=False)
+
+    # ---- Pick the best 20 images with their dominant color (if present) ----
+    if not manifest.empty:
+        cols = [c for c in manifest.columns if c in ("image_url", "source_url", "rank", "hex", "color")]
+        if not cols:
+            cols = list(manifest.columns[:6])
+        best_imgs = manifest.sort_values(manifest.columns[0]).head(20)[cols]
+        best_imgs.to_csv(_LATEST / "top_images_manifest.csv", index=False)
+
+    # ---- Write a tiny human summary (markdown) ----
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+    lines = [f"# Daily Fashion Signals — {today}\n"]
+
+    if not top_signals.empty:
+        try:
+            cols = (top_signals.query("signal == 'color'")
+                               .sort_values("score", ascending=False)
+                               .head(5)["name"].tolist())
+        except Exception:
+            cols = []
+        try:
+            fams = (top_signals.query("signal == 'color_family'")
+                               .sort_values("score", ascending=False)
+                               .head(3)["name"].tolist())
+        except Exception:
+            fams = []
+        try:
+            terms = (top_signals.query("signal == 'trend_term'")
+                                .sort_values("score", ascending=False)
+                                .head(7)["name"].tolist())
+        except Exception:
+            terms = []
+
+        if cols:
+            lines.append("**Top colors today**: " + ", ".join(cols))
+        if fams:
+            lines.append("**Leading color families**: " + ", ".join(fams))
+        if terms:
+            lines.append("**Google searches spiking**: " + ", ".join(terms))
+
+    # If we wrote a top images manifest above, mention count
+    tim = _LATEST / "top_images_manifest.csv"
+    if tim.exists():
+        try:
+            n = len(pd.read_csv(tim))
+            lines.append(f"\n**Hero images picked**: {n} (see `top_images_manifest.csv`)")
+        except Exception:
+            pass
+
+    md = "\n\n".join(lines) + "\n"
+    (_LATEST / "daily_summary.md").write_text(md, encoding="utf-8")
+    (_HISTORY / f"summary_{datetime.utcnow():%Y%m%d}.md").write_text(md, encoding="utf-8")
+    print("[summary] daily_summary.md + top_signals.csv written")
+
+def write_weekly_roundup():
+    """
+    Aggregate the last 7 days into:
+      - data/latest/weekly_roundup.md
+      - data/latest/weekly_signals.csv
+      - data/history/weekly_roundup_YYYYMMDD.md
+    Works even if some days or files are missing.
+    """
+    cutoff = datetime.utcnow() - timedelta(days=7)
+
+    # Collect GT files from latest/history
+    trend_files = list(_LATEST.glob("google_trends_*.csv")) + list(_HISTORY.glob("google_trends_*.csv"))
+    trend_frames = []
     for f in trend_files:
         try:
-            date_str = f.stem.split("_")[-1].split("-")[0]
-            dt = datetime.strptime(date_str, "%Y%m%d")
+            # filenames: google_trends_YYYYMMDD[ -HHMMSS].csv
+            stem = f.stem
+            chunk = stem.replace("google_trends_", "")
+            date_part = chunk.split("-")[0]
+            dt = datetime.strptime(date_part, "%Y%m%d")
             if dt >= cutoff:
                 df = pd.read_csv(f)
-                if "date" in df.columns:
-                    df["__date"] = pd.to_datetime(df["date"], errors="coerce")
-                rows.append(df)
+                trend_frames.append(df)
         except Exception:
             continue
 
-    if not rows:
-        print("[weekly] No Google Trends files from last 7 days found.")
-        return
+    top_terms = []
+    if trend_frames:
+        df_all = pd.concat(trend_frames, ignore_index=True)
+        # keep numeric columns only (trend series)
+        num = df_all.select_dtypes(include=["number"]).fillna(0)
+        if not num.empty:
+            weekly_mean = num.mean(numeric_only=True).sort_values(ascending=False).head(15)
+            top_terms = [str(k) for k in weekly_mean.index.tolist()]
 
-    df_all = pd.concat(rows, ignore_index=True)
-    df_all = df_all.select_dtypes(include=["number"]).fillna(0)
-
-    # Compute weekly average interest per term
-    weekly_mean = df_all.mean(numeric_only=True).sort_values(ascending=False).head(15)
-    top_terms = weekly_mean.index.tolist()
-
-    # Top colors (aggregate past week)
-    color_files = list(LATEST.glob("top_colors_today.csv")) + list(HISTORY.glob("top_colors_*.csv"))
-    color_rows = []
+    # Weekly colors: try to union daily top_colors_today over the week
+    color_files = list(_LATEST.glob("top_colors_today.csv")) + list(_HISTORY.glob("top_colors_*.csv"))
+    color_frames = []
     for f in color_files:
+        # If your history naming scheme doesn't include dates for colors, we still try latest
         try:
-            date_str = f.stem.split("_")[-1].split("-")[0]
-            dt = datetime.strptime(date_str, "%Y%m%d")
-            if dt >= cutoff:
-                color_rows.append(pd.read_csv(f))
+            # when file name has no date, include anyway (best-effort)
+            color_frames.append(pd.read_csv(f))
         except Exception:
-            continue
-    colors = pd.concat(color_rows, ignore_index=True) if color_rows else pd.DataFrame()
+            pass
     top_colors = []
-    if not colors.empty:
-        if "hex" in colors.columns:
-            c = colors["hex"].value_counts().head(8)
-            top_colors = c.index.tolist()
+    if color_frames:
+        cf = pd.concat(color_frames, ignore_index=True)
+        if "hex" in cf.columns:
+            top_colors = cf["hex"].value_counts().head(10).index.tolist()
 
-    # --- write outputs ---
-    out_csv = LATEST / "weekly_signals.csv"
-    pd.DataFrame({"top_trend_terms": top_terms, "top_colors": top_colors[:len(top_terms)]}).to_csv(out_csv, index=False)
+    # Write compact CSV
+    weekly_csv = _LATEST / "weekly_signals.csv"
+    # pad shorter list so CSV aligns
+    maxlen = max(len(top_terms), len(top_colors))
+    def _pad(lst, n): 
+        lst = lst[:]
+        while len(lst) < n:
+            lst.append("")
+        return lst
+    pd.DataFrame({
+        "top_trend_terms": _pad(top_terms, maxlen),
+        "top_colors": _pad(top_colors, maxlen)
+    }).to_csv(weekly_csv, index=False)
 
-    # Markdown summary
+    # Markdown roundup
     today = datetime.utcnow().strftime("%Y-%m-%d")
     md_lines = [
         f"# Weekly Fashion Roundup — Week Ending {today}",
         "",
-        "**Top Google Trend Terms:** " + ", ".join(top_terms),
+        ("**Top Google Trend Terms:** " + ", ".join(top_terms)) if top_terms else "**Top Google Trend Terms:** (no data)",
+        ("**Most Frequent Colors Extracted:** " + ", ".join(top_colors)) if top_colors else "**Most Frequent Colors Extracted:** (no data)",
+        "",
+        "_Files: `weekly_signals.csv` for charts_",
     ]
-    if top_colors:
-        md_lines.append("**Most Frequent Colors Extracted:** " + ", ".join(top_colors))
-    md = "\n\n".join(md_lines)
+    md_text = "\n".join(md_lines) + "\n"
+    (_LATEST / "weekly_roundup.md").write_text(md_text, encoding="utf-8")
+    (_HISTORY / f"weekly_roundup_{datetime.utcnow():%Y%m%d}.md").write_text(md_text, encoding="utf-8")
+    print("[summary] weekly_roundup.md + weekly_signals.csv written")
 
-    (LATEST / "weekly_roundup.md").write_text(md, encoding="utf-8")
-    (HISTORY / f"weekly_roundup_{datetime.utcnow():%Y%m%d}.md").write_text(md, encoding="utf-8")
-    print("[weekly] roundup complete")
-
-# call it after your main run
-if __name__ == "__main__":
-    weekly_roundup()
-
+# ---- CALLS ----
+# Call these after your pipeline has produced its usual CSVs.
+# If your file already has a "main" section, just add these two calls
+# at the very end of the run (once per run).
+try:
+    write_daily_summary()
+    write_weekly_roundup()
+except Exception as _e:
+    print("[summary] skipped due to error:", _e)
