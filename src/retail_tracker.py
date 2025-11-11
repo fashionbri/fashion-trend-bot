@@ -1,7 +1,7 @@
 # src/retail_tracker.py
 from datetime import datetime
 from typing import List
-import time, random, json, re, itertools
+import time, random, json, re
 from pathlib import Path
 from collections import Counter
 
@@ -13,17 +13,17 @@ from .config import LATEST
 # =======================
 # Tunables
 # =======================
-SEED_TERMS_PATH = "data/seed_terms_1000.txt"     # <-- put your 1000-term file here
+SEED_TERMS_PATH = "data/seed_terms_1000.txt"     # <-- 1000-term file lives here
 TERMS_CACHE_PATH = LATEST / "google_trends_terms_cache.json"
 
-DAILY_TERMS_TARGET = 120     # how many terms to hit per run (rotation sample)
-BATCH_SIZE = 3               # pytrends supports up to 5; keep 3-4 to avoid 429s
+DAILY_TERMS_TARGET = 120      # how many terms to hit per run (rotation sample)
+BATCH_SIZE = 3                # pytrends supports up to 5; keep 3-4 to avoid 429s
 BASE_SLEEP = 4.0
 MAX_ATTEMPTS_PER_BATCH = 8
-MAX_NEW_TERMS_FROM_RELATED = 400   # growth per run from related_queries
+MAX_NEW_TERMS_FROM_RELATED = 400   # growth per run from related_queries()
 
-# One shared TrendReq with HTTP-level retries/backoff.
-pytrend = TrendReq(hl="en-US", tz=0, timeout=(10, 30), retries=8, backoff_factor=4)
+# One shared TrendReq (urllib3 compat: do NOT pass retries/backoff_factor)
+pytrend = TrendReq(hl="en-US", tz=0, timeout=(10, 30))
 
 # =======================
 # Helpers
@@ -33,8 +33,8 @@ def load_terms(path: str = SEED_TERMS_PATH) -> List[str]:
     if not p.exists():
         print(f"[terms] Seed file missing at {path}. Using minimal fallback list.")
         return [
-            "sheer dress","metallic skirt","oversized blazer","ballet flats",
-            "kitten heels","crochet top","cargo pants","leather jacket"
+            "sheer dress", "metallic skirt", "oversized blazer", "ballet flats",
+            "kitten heels", "crochet top", "cargo pants", "leather jacket"
         ]
     return [t.strip() for t in p.read_text(encoding="utf-8").splitlines() if t.strip()]
 
@@ -101,7 +101,7 @@ def _score_related_bucket(bucket: dict) -> list[str]:
             # rising can be huge; compress contribution
             c[q] += 1 + min(int(val), 100)
     # prune obvious generic noise
-    banned = {"fashion","style","outfit","trend","runway","2024","2025","2026"}
+    banned = {"fashion", "style", "outfit", "trend", "runway", "2024", "2025", "2026"}
     for b in banned:
         if b in c:
             del c[b]
@@ -163,15 +163,15 @@ def google_trends():
         return today_out
 
     # --- load seeds from file; merge with cache; expand; rotate ---
-    file_seeds = [ _norm(t) for t in load_terms() ]
+    file_seeds = [_norm(t) for t in load_terms()]
     cache = _load_terms_cache()
 
     # Initialize seeds in cache if empty; always ensure file seeds are included
     seeds = list(dict.fromkeys((cache.get("seeds") or []) + file_seeds))
-    expanded_existing = [ _norm(t) for t in cache.get("expanded", []) ]
+    expanded_existing = [_norm(t) for t in cache.get("expanded", [])]
 
-    # Grow from related queries
-    new_candidates = _expand_terms_via_pytrends(pytrend, seeds[:50])  # limit initial expand seeds for speed
+    # Grow from related queries (limit seed count here for speed)
+    new_candidates = _expand_terms_via_pytrends(pytrend, seeds[:50])
     expanded_set = set(expanded_existing)
     fresh = [t for t in new_candidates if t not in expanded_set and t not in seeds]
     if fresh:
