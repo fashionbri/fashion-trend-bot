@@ -88,3 +88,82 @@ from src.visualize import visualize_correlations, visualize_forecasts
 print("6) Generating visuals…")
 visualize_correlations()
 visualize_forecasts()
+# ==== NEW: Weekly roundup generator ====
+from datetime import datetime, timedelta
+import pandas as pd
+from pathlib import Path
+
+LATEST = Path("data/latest")
+HISTORY = Path("data/history")
+HISTORY.mkdir(parents=True, exist_ok=True)
+
+def weekly_roundup():
+    cutoff = datetime.utcnow() - timedelta(days=7)
+    rows = []
+
+    # Collect all google_trends CSVs in latest or history
+    trend_files = list(LATEST.glob("google_trends_*.csv")) + list(HISTORY.glob("google_trends_*.csv"))
+    for f in trend_files:
+        try:
+            date_str = f.stem.split("_")[-1].split("-")[0]
+            dt = datetime.strptime(date_str, "%Y%m%d")
+            if dt >= cutoff:
+                df = pd.read_csv(f)
+                if "date" in df.columns:
+                    df["__date"] = pd.to_datetime(df["date"], errors="coerce")
+                rows.append(df)
+        except Exception:
+            continue
+
+    if not rows:
+        print("[weekly] No Google Trends files from last 7 days found.")
+        return
+
+    df_all = pd.concat(rows, ignore_index=True)
+    df_all = df_all.select_dtypes(include=["number"]).fillna(0)
+
+    # Compute weekly average interest per term
+    weekly_mean = df_all.mean(numeric_only=True).sort_values(ascending=False).head(15)
+    top_terms = weekly_mean.index.tolist()
+
+    # Top colors (aggregate past week)
+    color_files = list(LATEST.glob("top_colors_today.csv")) + list(HISTORY.glob("top_colors_*.csv"))
+    color_rows = []
+    for f in color_files:
+        try:
+            date_str = f.stem.split("_")[-1].split("-")[0]
+            dt = datetime.strptime(date_str, "%Y%m%d")
+            if dt >= cutoff:
+                color_rows.append(pd.read_csv(f))
+        except Exception:
+            continue
+    colors = pd.concat(color_rows, ignore_index=True) if color_rows else pd.DataFrame()
+    top_colors = []
+    if not colors.empty:
+        if "hex" in colors.columns:
+            c = colors["hex"].value_counts().head(8)
+            top_colors = c.index.tolist()
+
+    # --- write outputs ---
+    out_csv = LATEST / "weekly_signals.csv"
+    pd.DataFrame({"top_trend_terms": top_terms, "top_colors": top_colors[:len(top_terms)]}).to_csv(out_csv, index=False)
+
+    # Markdown summary
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+    md_lines = [
+        f"# Weekly Fashion Roundup — Week Ending {today}",
+        "",
+        "**Top Google Trend Terms:** " + ", ".join(top_terms),
+    ]
+    if top_colors:
+        md_lines.append("**Most Frequent Colors Extracted:** " + ", ".join(top_colors))
+    md = "\n\n".join(md_lines)
+
+    (LATEST / "weekly_roundup.md").write_text(md, encoding="utf-8")
+    (HISTORY / f"weekly_roundup_{datetime.utcnow():%Y%m%d}.md").write_text(md, encoding="utf-8")
+    print("[weekly] roundup complete")
+
+# call it after your main run
+if __name__ == "__main__":
+    weekly_roundup()
+
