@@ -1,3 +1,4 @@
+from typing import Optional
 import os, time, hashlib, re, shutil, math
 from datetime import datetime, timezone
 from pathlib import Path
@@ -182,7 +183,7 @@ def serpapi_search_urls(query: str, target_count: int, recency: str = "w") -> li
 
     return ordered[:target_count]
 
-def download_image(url: str, prefix: str) -> dict | None:
+def download_image(url: str, prefix: str) -> Optional[dict]:
     for attempt in range(2):  # tiny retry for flaky hosts
         try:
             r = session.get(url, stream=True, timeout=TIMEOUT)
