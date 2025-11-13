@@ -10,3 +10,5 @@ beautifulsoup4
 lxml
 scikit-learn
 plotly
+sentence-transformers
+torch
