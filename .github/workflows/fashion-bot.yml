@@ -43,3 +43,24 @@ jobs:
           git add data/ models/
           git commit -m "auto: update data and models" || echo "no changes to commit"
           git push
+                # 4️⃣ Run the full pipeline
+      - name: Run Fashion Forecast pipeline
+        env:
+          SERP_API_KEY: ${{ secrets.SERP_API_KEY }}
+        run: |
+          python scripts/run_all.py
+
+      # ⭐️ 4.5️⃣ Run Daily/Weekly Summary ⭐️
+      - name: Build Daily & Weekly Summaries
+        run: |
+          python summary_compact.py
+
+      # 5️⃣ Commit and push new outputs
+      - name: Commit & push updated data and models
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/ models/
+          git add summary_* *.md || true
+          git commit -m "auto: update data, models, and summaries" || echo "no changes to commit"
+          git push
