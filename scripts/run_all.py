@@ -1,127 +1,119 @@
-# =========================
-# FASHION FORECAST BOT – MASTER PIPELINE
-# =========================
-import sys
+# scripts/run_all.py
+# ======================================================
+# PIPELINE ORCHESTRATOR FOR THE FASHION TREND BOT
+# ======================================================
+
 from pathlib import Path
 from datetime import datetime, timedelta
-
 import pandas as pd
+import subprocess
+import sys
+import traceback
 
-# Make sure we can import modules from the repo root even if this file lives in scripts/
-HERE = Path(__file__).resolve()
-ROOT = HERE.parent if HERE.parent.name != "scripts" else HERE.parent.parent
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+ROOT = Path(".")
+LATEST = ROOT / "data/latest"
+HISTORY = ROOT / "data/history"
+HISTORY.mkdir(parents=True, exist_ok=True)
 
-_LATEST = ROOT / "data/latest"
-_HISTORY = ROOT / "data/history"
-_HISTORY.mkdir(parents=True, exist_ok=True)
-
-
-# =========================
-# HELPERS
-# =========================
-def _safe_read_csv(p: Path) -> pd.DataFrame:
+# ----------------------
+# Safe CSV loader
+# ----------------------
+def _safe_read_csv(path: Path) -> pd.DataFrame:
     try:
-        return pd.read_csv(p)
+        return pd.read_csv(path)
     except Exception:
         return pd.DataFrame()
 
 
-def _ensure_top_color_tables() -> None:
+# ======================================================
+# 1) Ensure normalized top color tables exist
+# ======================================================
+def _ensure_top_color_tables():
     """
-    If top_colors_today.csv / top_color_families_today.csv are missing or empty,
-    build them from colors_opencv.csv and colors_families.csv.
+    Convert ANY existing color output format into unified:
+        top_colors_today.csv      → hex, share
+        top_color_families_today.csv → family, share
     """
-    top_colors_path = _LATEST / "top_colors_today.csv"
-    top_fams_path = _LATEST / "top_color_families_today.csv"
+    # try to find any colors file for today
+    today = datetime.utcnow().strftime("%Y%m%d")
+    possible = list(LATEST.glob(f"colors_{today}.csv"))
 
-    top_colors = _safe_read_csv(top_colors_path)
-    top_fams = _safe_read_csv(top_fams_path)
+    if not possible:
+        return  # nothing to normalize
 
-    colors_all = _safe_read_csv(_LATEST / "colors_opencv.csv")
-    fams_all = _safe_read_csv(_LATEST / "colors_families.csv")
+    df = pd.concat([_safe_read_csv(p) for p in possible], ignore_index=True)
 
-    # Build top_colors_today.csv if needed
-    if (top_colors.empty or "hex" not in top_colors.columns) and not colors_all.empty:
-        if "hex" in colors_all.columns:
-            if "share" in colors_all.columns:
-                agg = (
-                    colors_all.groupby("hex")["share"]
-                    .sum()
-                    .reset_index()
-                    .sort_values("share", ascending=False)
-                )
-            else:
-                agg = (
-                    colors_all["hex"]
-                    .value_counts()
-                    .reset_index()
-                    .rename(columns={"index": "hex", "hex": "share"})
-                )
-            agg.to_csv(top_colors_path, index=False)
-            top_colors = agg
+    # Normalize column names
+    df = df.rename(
+        columns={
+            "color_hex": "hex",
+            "color": "hex",
+            "color_family": "family",
+            "count": "share",
+            "rank_share": "share",
+        }
+    )
 
-    # Build top_color_families_today.csv if needed
-    if (top_fams.empty or "family" not in top_fams.columns) and not fams_all.empty:
-        if "family" in fams_all.columns:
-            if "share" in fams_all.columns:
-                fam_agg = (
-                    fams_all.groupby("family")["share"]
-                    .sum()
-                    .reset_index()
-                    .sort_values("share", ascending=False)
-                )
-            else:
-                fam_agg = (
-                    fams_all["family"]
-                    .value_counts()
-                    .reset_index()
-                    .rename(columns={"index": "family", "family": "share"})
-                )
-            fam_agg.to_csv(top_fams_path, index=False)
-            top_fams = fam_agg
+    # COLOR TABLE
+    top_colors = df[["hex", "share"]].dropna().copy()
+    top_colors = top_colors.groupby("hex", as_index=False)["share"].sum()
+    top_colors = top_colors.sort_values("share", ascending=False)
+    top_colors.to_csv(LATEST / "top_colors_today.csv", index=False)
 
-    return
+    # FAMILY TABLE
+    if "family" in df.columns:
+        fam = df[["family", "share"]].dropna().copy()
+        fam = fam.groupby("family", as_index=False)["share"].sum()
+        fam = fam.sort_values("share", ascending=False)
+        fam.to_csv(LATEST / "top_color_families_today.csv", index=False)
 
 
-# =========================
-# DAILY + WEEKLY SUMMARY
-# =========================
+# ======================================================
+# 2) DAILY SUMMARY WITH EDITORIAL SENTENCE
+# ======================================================
 def write_daily_summary():
-    # make sure the top_* tables exist
     _ensure_top_color_tables()
 
-    top_colors = _safe_read_csv(_LATEST / "top_colors_today.csv")
-    color_fams = _safe_read_csv(_LATEST / "top_color_families_today.csv")
-    manifest = _safe_read_csv(_LATEST / "download_manifest.csv")
+    top_colors = _safe_read_csv(LATEST / "top_colors_today.csv")
+    color_fams = _safe_read_csv(LATEST / "top_color_families_today.csv")
+    manifest = _safe_read_csv(LATEST / "download_manifest.csv")
+    hybrid = _safe_read_csv(LATEST / "hybrid_tags.csv")
+
+    # Load Google Trends if exists
     gt = pd.DataFrame()
-    gt_files = sorted(_LATEST.glob("google_trends_*.csv"))
+    gt_files = sorted(LATEST.glob("google_trends_*.csv"))
     if gt_files:
         gt = _safe_read_csv(gt_files[-1])
 
     rows = []
 
+    # -------------------------
     # Colors
+    # -------------------------
     if not top_colors.empty:
-        # normalize names just in case
+        # ensure normalized
         if "hex" not in top_colors.columns:
             if "color_hex" in top_colors.columns:
                 top_colors = top_colors.rename(columns={"color_hex": "hex"})
             elif "color" in top_colors.columns:
                 top_colors = top_colors.rename(columns={"color": "hex"})
+
         if "share" not in top_colors.columns and "count" in top_colors.columns:
             top_colors = top_colors.rename(columns={"count": "share"})
 
         for _, r in top_colors.head(8).iterrows():
-            rows.append({
-                "signal": "color",
-                "name": str(r.get("hex") or "").strip(),
-                "score": float(r.get("share", 0) or r.get("rank_share", 0) or 0),
-                "extra": "hex"
-            })
+            rows.append(
+                {
+                    "signal": "color",
+                    "name": str(r.get("hex") or "").strip(),
+                    "score": float(r.get("share", 0)),
+                    "extra": "hex",
+                }
+            )
 
+    # -------------------------
     # Color families
+    # -------------------------
     if not color_fams.empty:
         if "family" not in color_fams.columns and "color_family" in color_fams.columns:
             color_fams = color_fams.rename(columns={"color_family": "family"})
@@ -129,42 +121,44 @@ def write_daily_summary():
             color_fams = color_fams.rename(columns={"count": "share"})
 
         for _, r in color_fams.head(6).iterrows():
-            rows.append({
-                "signal": "color_family",
-                "name": str(r.get("family") or "").strip(),
-                "score": float(r.get("share", 0) or 0),
-                "extra": ""
-            })
+            rows.append(
+                {
+                    "signal": "color_family",
+                    "name": str(r.get("family") or "").strip(),
+                    "score": float(r.get("share", 0)),
+                    "extra": "",
+                }
+            )
 
+    # -------------------------
     # Google Trends
+    # -------------------------
     if not gt.empty:
         try:
             latest_row = gt.iloc[-1]
             sr = latest_row.drop(
                 labels=[c for c in gt.columns if str(c).lower() in ("date", "ispartial")],
-                errors="ignore"
+                errors="ignore",
             )
             sr = pd.to_numeric(sr, errors="coerce").sort_values(ascending=False).head(10)
             for term, val in sr.items():
-                rows.append({
-                    "signal": "trend_term",
-                    "name": str(term),
-                    "score": float(val),
-                    "extra": ""
-                })
+                rows.append(
+                    {
+                        "signal": "trend_term",
+                        "name": str(term),
+                        "score": float(val),
+                        "extra": "",
+                    }
+                )
         except Exception:
             pass
 
     top_signals = pd.DataFrame(rows)
-    top_signals.to_csv(_LATEST / "top_signals.csv", index=False)
+    top_signals.to_csv(LATEST / "top_signals.csv", index=False)
 
-    # Images
-    if not manifest.empty:
-        cols = [c for c in manifest.columns if c in ("image_url", "source_url", "rank", "hex", "color")]
-        if cols:
-            best_imgs = manifest.sort_values(manifest.columns[0]).head(20)[cols]
-            best_imgs.to_csv(_LATEST / "top_images_manifest.csv", index=False)
-
+    # ======================================================
+    # Build Markdown summary
+    # ======================================================
     today = datetime.utcnow().strftime("%Y-%m-%d")
     lines = [f"# Daily Fashion Signals — {today}\n"]
 
@@ -172,167 +166,201 @@ def write_daily_summary():
         cols = top_signals.query("signal == 'color'").head(5)["name"].tolist()
         fams = top_signals.query("signal == 'color_family'").head(3)["name"].tolist()
         terms = top_signals.query("signal == 'trend_term'").head(7)["name"].tolist()
-        if cols:
-            lines.append("**Top colors today**: " + ", ".join(cols))
-        if fams:
-            lines.append("**Leading color families**: " + ", ".join(fams))
-        if terms:
-            lines.append("**Google searches spiking**: " + ", ".join(terms))
 
-    if (_LATEST / "top_images_manifest.csv").exists():
-        try:
-            n = len(pd.read_csv(_LATEST / "top_images_manifest.csv"))
-            lines.append(f"\n**Hero images picked**: {n} (see `top_images_manifest.csv`)")
-        except Exception:
-            pass
+        if cols:
+            lines.append("**Top colors today:** " + ", ".join(cols))
+        if fams:
+            lines.append("**Leading color families:** " + ", ".join(fams))
+        if terms:
+            lines.append("**Google searches spiking:** " + ", ".join(terms))
+
+    # -------------------------
+    # NEW Editorial Line from Hybrid Tags
+    # -------------------------
+    if not hybrid.empty:
+
+        def _top_term(sub: str):
+            subdf = hybrid[hybrid["group"].str.contains(sub, case=False, na=False)]
+            if subdf.empty:
+                return None
+            return subdf["term"].value_counts().index[0]
+
+        top_garment = _top_term("garment") or _top_term("silhouette")
+        top_fabric = _top_term("fabric") or _top_term("texture")
+        top_mood = _top_term("mood")
+        top_motif = _top_term("motif")
+        top_geo = _top_term("geography")
+
+        bits = []
+
+        if top_garment and top_fabric:
+            bits.append(f"{top_garment} in {top_fabric}")
+        elif top_garment:
+            bits.append(top_garment)
+        elif top_fabric:
+            bits.append(top_fabric)
+
+        if top_mood:
+            bits.append(f"with a {top_mood} feel")
+        if top_motif:
+            bits.append(f"marked by {top_motif}")
+
+        if bits:
+            sentence = "Today’s read: " + ", ".join(bits)
+            if top_geo:
+                sentence += f", most visible in {top_geo}."
+            else:
+                sentence += "."
+            lines.append("\n" + sentence)
+
+    # -------------------------
+    # Images (hero manifest)
+    # -------------------------
+    if not manifest.empty:
+        cols = [c for c in manifest.columns if c in ("image_url", "source_url", "rank", "hex", "color")]
+        if cols:
+            best_imgs = manifest.sort_values(manifest.columns[0]).head(20)[cols]
+            best_imgs.to_csv(LATEST / "top_images_manifest.csv", index=False)
+
+            try:
+                n = len(best_imgs)
+                lines.append(f"\n**Hero images picked:** {n} (see `top_images_manifest.csv`)")
+            except:
+                pass
 
     md = "\n\n".join(lines) + "\n"
-    (_LATEST / "daily_summary.md").write_text(md, encoding="utf-8")
-    (_HISTORY / f"summary_{datetime.utcnow():%Y%m%d}.md").write_text(md, encoding="utf-8")
+    (LATEST / "daily_summary.md").write_text(md, encoding="utf-8")
+    (HISTORY / f"summary_{datetime.utcnow():%Y%m%d}.md").write_text(md, encoding="utf-8")
+
     print("[summary] daily_summary.md + top_signals.csv written")
 
 
+# ======================================================
+# 3) WEEKLY ROUNDUP
+# ======================================================
 def write_weekly_roundup():
     cutoff = datetime.utcnow() - timedelta(days=7)
-    trend_files = list(_LATEST.glob("google_trends_*.csv")) + list(_HISTORY.glob("google_trends_*.csv"))
-    trend_frames = []
 
+    # Gather Trends
+    trend_files = list(LATEST.glob("google_trends_*.csv")) + list(HISTORY.glob("google_trends_*.csv"))
+    trend_frames = []
     for f in trend_files:
         try:
             date_part = f.stem.replace("google_trends_", "").split("-")[0]
             dt = datetime.strptime(date_part, "%Y%m%d")
             if dt >= cutoff:
-                df = pd.read_csv(f)
-                trend_frames.append(df)
+                trend_frames.append(pd.read_csv(f))
         except Exception:
-            continue
+            pass
 
     top_terms = []
     if trend_frames:
         df_all = pd.concat(trend_frames, ignore_index=True)
         num = df_all.select_dtypes(include=["number"]).fillna(0)
         if not num.empty:
-            weekly_mean = num.mean(numeric_only=True).sort_values(ascending=False).head(15)
-            top_terms = [str(k) for k in weekly_mean.index.tolist()]
+            top_terms = (
+                num.mean().sort_values(ascending=False).head(15).index.tolist()
+            )
 
-    color_files = list(_LATEST.glob("top_colors_today.csv")) + list(_HISTORY.glob("top_colors_*.csv"))
+    # Gather Colors
+    color_files = list(LATEST.glob("top_colors_today.csv")) + list(HISTORY.glob("top_colors_*.csv"))
     color_frames = []
     for f in color_files:
         try:
             color_frames.append(pd.read_csv(f))
-        except Exception:
+        except:
             pass
+
     top_colors = []
     if color_frames:
         cf = pd.concat(color_frames, ignore_index=True)
         if "hex" in cf.columns:
             top_colors = cf["hex"].value_counts().head(10).index.tolist()
 
-    weekly_csv = _LATEST / "weekly_signals.csv"
-    maxlen = max(len(top_terms), len(top_colors)) if (top_terms or top_colors) else 0
+    # Export CSV
+    weekly_csv = LATEST / "weekly_signals.csv"
+    maxlen = max(len(top_terms), len(top_colors))
 
     def _pad(lst, n):
         return lst + [""] * (n - len(lst))
 
-    if maxlen > 0:
-        pd.DataFrame({
+    pd.DataFrame(
+        {
             "top_trend_terms": _pad(top_terms, maxlen),
-            "top_colors": _pad(top_colors, maxlen)
-        }).to_csv(weekly_csv, index=False)
+            "top_colors": _pad(top_colors, maxlen),
+        }
+    ).to_csv(weekly_csv, index=False)
 
+    # Markdown summary
     today = datetime.utcnow().strftime("%Y-%m-%d")
     md_lines = [
         f"# Weekly Fashion Roundup — Week Ending {today}",
         "",
-        ("**Top Google Trend Terms:** " + ", ".join(top_terms)) if top_terms else "**Top Google Trend Terms:** (no data)",
-        ("**Most Frequent Colors Extracted:** " + ", ".join(top_colors)) if top_colors else "**Most Frequent Colors Extracted:** (no data)",
+        "**Top Google Trend Terms:** " + (", ".join(top_terms) if top_terms else "(no data)"),
+        "**Most Frequent Colors Extracted:** " + (", ".join(top_colors) if top_colors else "(no data)"),
         "",
         "_Files: `weekly_signals.csv` for charts_",
     ]
     md_text = "\n".join(md_lines) + "\n"
-    (_LATEST / "weekly_roundup.md").write_text(md_text, encoding="utf-8")
-    (_HISTORY / f"weekly_roundup_{datetime.utcnow():%Y%m%d}.md").write_text(md_text, encoding="utf-8")
+
+    (LATEST / "weekly_roundup.md").write_text(md_text, encoding="utf-8")
+    (HISTORY / f"weekly_roundup_{datetime.utcnow():%Y%m%d}.md").write_text(md_text, encoding="utf-8")
+
     print("[summary] weekly_roundup.md + weekly_signals.csv written")
 
 
-# =========================
-# MASTER PIPELINE
-# =========================
-def main():
-    # 1) Run the core “search + download + colors + metadata” pipeline
+# ======================================================
+# 4) MAIN PIPELINE RUNNER
+# ======================================================
+if __name__ == "__main__":
     try:
-        import search_and_update  # importing executes the script
-        print("[run_all] search_and_update pipeline finished.")
-    except Exception as e:
-        print("[run_all] ERROR running search_and_update:", e)
-
-    # 2) Optional: build text features (hybrid engine – text side)
-    try:
+        # --------------------------------------------------
+        # Stage 1: Search scraper
+        # --------------------------------------------------
         try:
-            from text_features import build_text_features
-        except ImportError:
-            from src.text_features import build_text_features  # if you placed it under src/
-    except Exception:
-        build_text_features = None
+            subprocess.run([sys.executable, "scripts/search_and_update.py"], check=True)
+        except Exception:
+            print("[WARN] search_and_update.py failed")
+            traceback.print_exc()
 
-    if build_text_features:
+        # --------------------------------------------------
+        # Stage 2: Text Features
+        # --------------------------------------------------
         try:
-            print("[run_all] building text features…")
-            build_text_features()
-        except Exception as e:
-            print("[run_all] ERROR in build_text_features:", e)
-    else:
-        print("[run_all] text_features module not found — skipping text embeddings.")
+            subprocess.run([sys.executable, "scripts/run_extract.py"], check=True)
+        except Exception:
+            print("[WARN] run_extract.py failed (text extraction)")
+            traceback.print_exc()
 
-    # 3) Optional: build image embeddings (hybrid engine – vision side)
-    try:
+        # --------------------------------------------------
+        # Stage 3: Image Embeddings
+        # --------------------------------------------------
         try:
-            from image_embeddings import build_image_embeddings
-        except ImportError:
-            from src.image_embeddings import build_image_embeddings
-    except Exception:
-        build_image_embeddings = None
+            import src.image_embeddings as IE
+            IE.build_image_embeddings()
+        except Exception:
+            print("[WARN] image_embeddings failed")
+            traceback.print_exc()
 
-    if build_image_embeddings:
+        # --------------------------------------------------
+        # Stage 4: Hybrid Tagging
+        # --------------------------------------------------
         try:
-            print("[run_all] building image embeddings…")
-            build_image_embeddings()
-        except Exception as e:
-            print("[run_all] ERROR in build_image_embeddings:", e)
-    else:
-        print("[run_all] image_embeddings module not found — skipping image embeddings.")
+            import src.hybrid_tagger as HT
+            HT.run_hybrid()
+        except Exception:
+            print("[WARN] hybrid tagging failed")
+            traceback.print_exc()
 
-    # 4) Optional: run hybrid tagger (taxonomy + semantic similarity)
-    try:
-        try:
-            from hybrid_tagger import run_hybrid_tagger
-        except ImportError:
-            from src.hybrid_tagger import run_hybrid_tagger
-    except Exception:
-        run_hybrid_tagger = None
-
-    if run_hybrid_tagger:
-        try:
-            print("[run_all] running hybrid tagger…")
-            run_hybrid_tagger()
-        except Exception as e:
-            print("[run_all] ERROR in run_hybrid_tagger:", e)
-    else:
-        print("[run_all] hybrid_tagger module not found — skipping hybrid tagging.")
-
-    # 5) Summaries
-    try:
-        print("[run_all] generating daily summary…")
+        # --------------------------------------------------
+        # Stage 5: Daily Summary
+        # --------------------------------------------------
         write_daily_summary()
 
+        # Weekly only runs Sunday
         if datetime.utcnow().weekday() == 6:
-            print("[run_all] generating weekly roundup (Sunday)…")
             write_weekly_roundup()
-        else:
-            print("[run_all] skipping weekly roundup (not Sunday)")
+
     except Exception as e:
-        print("[run_all] ERROR while generating summaries:", e)
-
-
-if __name__ == "__main__":
-    main()
+        print("[FATAL ERROR in run_all.py]:", e)
+        traceback.print_exc()
