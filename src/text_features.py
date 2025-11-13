@@ -11,6 +11,9 @@ MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
 
 
 def _combine_text_fields(row: pd.Series, fields: List[str]) -> str:
+    """
+    Join available text fields into one string for embedding.
+    """
     parts = []
     for f in fields:
         val = str(row.get(f, "") or "").strip()
@@ -24,17 +27,12 @@ def build_text_features(
     out_path: Path | None = None,
 ) -> Path:
     """
-    Read metadata.csv, combine text fields into one string per image,
-    embed with a sentence-transformer, and save to data/latest/text_features.csv.
+    Read data/metadata.csv, combine text fields per image, embed using a
+    sentence-transformer model, and save to data/latest/text_features.csv.
 
-    Expected columns in metadata.csv (tweak to match your file):
-      - image_id
-      - title
-      - alt_text
-      - caption
-      - description
+    It is robust to missing columns: it will use any of these that exist:
+      - title, alt_text, caption, description, query, headline, body
     """
-
     if out_path is None:
         out_path = LATEST / "text_features.csv"
 
@@ -43,26 +41,55 @@ def build_text_features(
         return out_path
 
     df = pd.read_csv(metadata_path)
-    if "image_id" not in df.columns:
-        print("[text_features] metadata.csv has no image_id column, skipping.")
-        return out_path
 
-    # tweak this list if your columns are named differently
-    text_fields = [c for c in ["title", "alt_text", "caption", "description", "query"] if c in df.columns]
+    if "image_id" not in df.columns:
+        # Best effort: try to construct an image_id if missing
+        if "id" in df.columns:
+            df["image_id"] = df["id"].astype(str)
+        elif "path" in df.columns:
+            df["image_id"] = df["path"].astype(str)
+        else:
+            df["image_id"] = df.index.astype(str)
+
+    # pick any text-like fields that exist
+    candidate_fields = [
+        "title",
+        "alt_text",
+        "caption",
+        "description",
+        "query",
+        "headline",
+        "body",
+    ]
+    text_fields = [c for c in candidate_fields if c in df.columns]
+
     if not text_fields:
-        print("[text_features] No text fields found (title/alt_text/caption/description/query), skipping.")
+        print("[text_features] No text-like fields found in metadata.csv, skipping.")
         return out_path
 
     df["text"] = df.apply(lambda r: _combine_text_fields(r, text_fields), axis=1)
 
-    model = SentenceTransformer(MODEL_NAME)
-    embeddings = model.encode(df["text"].tolist(), batch_size=64, convert_to_numpy=True, normalize_embeddings=True)
+    # filter out completely empty text rows
+    df = df[df["text"].str.strip() != ""]
+    if df.empty:
+        print("[text_features] All rows have empty text, skipping.")
+        return out_path
 
-    # Build output frame: image_id + emb_0..emb_(dim-1)
+    print(f"[text_features] Using fields {text_fields} for text embeddings.")
+    print(f"[text_features] Encoding {len(df)} rows with {MODEL_NAME}…")
+
+    model = SentenceTransformer(MODEL_NAME)
+    embeddings = model.encode(
+        df["text"].tolist(),
+        batch_size=64,
+        convert_to_numpy=True,
+        normalize_embeddings=True,
+    )
+
     dim = embeddings.shape[1]
-    emb_cols = {i: f"emb_{i}" for i in range(dim)}
-    out_df = pd.DataFrame(embeddings, columns=[emb_cols[i] for i in range(dim)])
-    out_df.insert(0, "image_id", df["image_id"].values)
+    emb_cols = [f"emb_{i}" for i in range(dim)]
+    out_df = pd.DataFrame(embeddings, columns=emb_cols)
+    out_df.insert(0, "image_id", df["image_id"].astype(str).values)
 
     LATEST.mkdir(parents=True, exist_ok=True)
     out_df.to_csv(out_path, index=False)
