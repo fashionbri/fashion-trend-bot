@@ -22,7 +22,7 @@ def _load_image(path: Path) -> Image.Image | None:
 def build_image_embeddings(
     manifest_path: Path = LATEST / "download_manifest.csv",
     out_path: Path | None = None,
-    image_path_column: str = "local_path",
+    image_path_column: str = "path",
 ) -> Path:
     """
     Read download_manifest.csv, embed each image using a vision model,
