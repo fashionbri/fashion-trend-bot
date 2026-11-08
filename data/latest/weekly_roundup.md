@@ -1,4 +1,4 @@
-# Weekly Fashion Roundup — Week Ending 2026-11-01
+# Weekly Fashion Roundup — Week Ending 2026-11-08
 
 **Top Google Trend Terms:** (no data)
 **Most Frequent Colors Extracted:** (no data)
